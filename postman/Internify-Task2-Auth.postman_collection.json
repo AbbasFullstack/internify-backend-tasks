@@ -1,0 +1,567 @@
+{
+  "info": {
+    "name": "Internify Task 2 — JWT Authentication",
+    "description": "Full authentication flow: signup, login, get profile, and a protected route. Also covers the 400 / 401 / 409 error paths. Set `baseUrl`, then run the folder in order — the `token` variable is populated automatically by the login request's test script.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "email",
+      "value": "abbas@example.com",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "SecurePass123",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Signup",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201 Created', function () {",
+              "  pm.response.to.have.status(201);",
+              "});",
+              "",
+              "pm.test('response has success flag and token', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.success).to.be.true;",
+              "  pm.expect(body.data.token).to.be.a('string').and.not.empty;",
+              "});",
+              "",
+              "pm.test('password hash is never returned', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.data.user.password).to.be.undefined;",
+              "});",
+              "",
+              "// Keep the token for the protected requests below.",
+              "if (pm.response.code === 201) {",
+              "  pm.collectionVariables.set('token', pm.response.json().data.token);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Abbas Hussain\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/auth/signup",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "auth",
+            "signup"
+          ]
+        },
+        "description": "Register a new user. The password is hashed with bcrypt before it is stored, and the raw password never appears in the response."
+      }
+    },
+    {
+      "name": "2. Login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200 OK', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('response returns a JWT', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.data.token).to.be.a('string');",
+              "  // A JWT is three base64url segments separated by dots.",
+              "  pm.expect(body.data.token.split('.')).to.have.lengthOf(3);",
+              "});",
+              "",
+              "pm.collectionVariables.set('token', pm.response.json().data.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/auth/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "auth",
+            "login"
+          ]
+        },
+        "description": "Validate credentials and issue a JWT. The `token` collection variable is set from this response so the protected requests below work without copy-pasting."
+      }
+    },
+    {
+      "name": "3. Get Logged-in Profile (protected)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200 OK', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('returns the authenticated user', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.data.email).to.eql(pm.collectionVariables.get('email'));",
+              "  pm.expect(body.data.password).to.be.undefined;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/auth/me",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "auth",
+            "me"
+          ]
+        },
+        "description": "Returns the current user's own record, read from MongoDB using the id in the token. Requires a valid Bearer token."
+      }
+    },
+    {
+      "name": "4. Protected Route (dashboard)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200 OK', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('greets the caller by name', function () {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.data.greeting).to.include('Abbas Hussain');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/protected/dashboard",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "protected",
+            "dashboard"
+          ]
+        },
+        "description": "A non-auth resource behind the same reusable `protect` middleware, showing it is not welded to the auth controller."
+      }
+    },
+    {
+      "name": "Errors",
+      "item": [
+        {
+          "name": "E1. Signup — duplicate email (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409 Conflict', function () {",
+                  "  pm.response.to.have.status(409);",
+                  "});",
+                  "",
+                  "pm.test('message explains the conflict', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/already exists/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Duplicate User\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Run this AFTER the signup request — the email is already registered, so it must return 409."
+          }
+        },
+        {
+          "name": "E2. Signup — missing field (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('message names the missing field', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/Name is required/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody@example.com\",\n  \"password\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Name is omitted, so validation fails before the controller runs."
+          }
+        },
+        {
+          "name": "E3. Signup — weak password (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('message states the password rule', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/letter and one number/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Weak Password\",\n  \"email\": \"weak@example.com\",\n  \"password\": \"12345678\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Eight digits and no letter — rejected with a message that says exactly what is missing."
+          }
+        },
+        {
+          "name": "E4. Login — wrong password (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('message does not reveal whether the email exists', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/Invalid email or password/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"WrongPass123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Deliberately generic message — the same one returned for an unknown email, so the endpoint cannot be used to enumerate registered accounts."
+          }
+        },
+        {
+          "name": "E5. Login — unknown email (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('message matches the wrong-password case', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/Invalid email or password/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody@example.com\",\n  \"password\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Compare this response to E4 — they must be byte-for-byte identical apart from nothing."
+          }
+        },
+        {
+          "name": "E6. Protected — no token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('message explains a Bearer token is required', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/Bearer token/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "No Authorization header at all."
+          }
+        },
+        {
+          "name": "E7. Protected — malformed token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('message says the token is invalid', function () {",
+                  "  pm.expect(pm.response.json().message).to.match(/Invalid token/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.real.token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "A syntactically-shaped string that is not a signed token."
+          }
+        },
+        {
+          "name": "E8. Protected — tampered signature (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}xyz"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Appends characters to a real token, breaking the HMAC signature. Run AFTER login so `token` is populated."
+          }
+        }
+      ]
+    }
+  ]
+}
