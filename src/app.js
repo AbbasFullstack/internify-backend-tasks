@@ -10,6 +10,8 @@ import morgan from 'morgan';
 import mongoose from 'mongoose';
 
 import bookRoutes from './routes/bookRoutes.js';
+import authRoutes from './routes/authRoutes.js';
+import protectedRoutes from './routes/protectedRoutes.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import AppError from './utils/AppError.js';
 
@@ -29,7 +31,7 @@ if (process.env.NODE_ENV !== 'test') {
 app.get('/', (_req, res) => {
   res.status(200).json({
     success: true,
-    message: 'Internify Backend Tasks — Task 1: Books CRUD API',
+    message: 'Internify Backend Tasks — Books CRUD API + JWT authentication',
     endpoints: {
       health: 'GET /api/health',
       listBooks: 'GET /api/books',
@@ -37,6 +39,10 @@ app.get('/', (_req, res) => {
       getBook: 'GET /api/books/:id',
       updateBook: 'PUT /api/books/:id',
       deleteBook: 'DELETE /api/books/:id',
+      signup: 'POST /api/auth/signup',
+      login: 'POST /api/auth/login',
+      profile: 'GET /api/auth/me (protected)',
+      dashboard: 'GET /api/protected/dashboard (protected)',
     },
   });
 });
@@ -59,6 +65,8 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/books', bookRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/protected', protectedRoutes);
 
 // Unmatched route -> 404, then the central error handler.
 app.use(notFound);
