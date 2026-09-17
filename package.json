@@ -1,7 +1,7 @@
 {
   "name": "internify-backend-tasks",
   "version": "1.0.0",
-  "description": "Internify Backend Development Internship — Tasks: RESTful CRUD API for a Books resource, and a JWT authentication system (Node.js, Express, MongoDB, Mongoose)",
+  "description": "Internify Backend Development Internship — RESTful CRUD API, JWT authentication, and role-based access control (Node.js, Express, MongoDB, Mongoose)",
   "type": "module",
   "main": "server.js",
   "engines": {
@@ -13,7 +13,10 @@
     "test": "node --test tests/",
     "test:auth": "node --test tests/auth.test.js",
     "smoke": "node scripts/smoke-test.js",
-    "smoke:auth": "node scripts/auth-smoke-test.js"
+    "smoke:auth": "node scripts/auth-smoke-test.js",
+    "test:rbac": "node --test tests/rbac.test.js",
+    "smoke:rbac": "node scripts/rbac-smoke-test.js",
+    "make:admin": "node scripts/make-admin.js"
   },
   "keywords": [
     "nodejs",

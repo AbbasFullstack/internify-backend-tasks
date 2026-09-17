@@ -33,11 +33,24 @@ export const expiresIn = () => process.env.JWT_EXPIRES_IN || '1h';
 
 /**
  * Sign a token for a user.
- * `sub` carries the user id (the JWT-standard claim for the subject).
+ *
+ * Claims:
+ *   sub   — the user id (the JWT-standard claim for the subject)
+ *   email — handy for logging and client display
+ *   role  — 'user' | 'admin', so a client can adapt its UI without a round-trip
+ *
+ * On the `role` claim: it is carried for the client's convenience, NOT used to
+ * authorise. The `restrictTo` middleware reads `req.user.role`, which `protect`
+ * loads fresh from MongoDB, so a token minted before a demotion cannot be used
+ * to keep admin access. Treat this claim as a hint, never as the source of truth.
  */
 export const signToken = (user) =>
   jwt.sign(
-    { sub: user.id ?? String(user._id), email: user.email },
+    {
+      sub: user.id ?? String(user._id),
+      email: user.email,
+      role: user.role,
+    },
     getSecret(),
     { expiresIn: expiresIn(), issuer: TOKEN_ISSUER }
   );

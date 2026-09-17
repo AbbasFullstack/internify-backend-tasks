@@ -6,6 +6,7 @@
  *  - email    : required, unique, lowercased and trimmed so
  *               "Abbas@Example.com" and "abbas@example.com" cannot both exist
  *  - password : required, minimum 8 characters, hashed before save
+ *  - role     : 'user' | 'admin', defaults to 'user'
  *
  * Password handling:
  *  - The raw password is never stored. A pre-save hook hashes it with bcrypt,
@@ -14,11 +15,23 @@
  *  - `select: false` keeps the hash out of every query result by default.
  *    Login and any other flow that needs it must opt in with
  *    `.select('+password')`, which is a deliberate, greppable act.
+ *
+ * Role handling (Task 3):
+ *  - `role` is deliberately NOT accepted from a signup body. The auth validator
+ *    only allows name/email/password, so `{"role":"admin"}` is rejected with a
+ *    400 instead of silently granting privileges. Elevation happens through
+ *    an admin-only endpoint or the bootstrap script — never self-service.
+ *  - `ROLES` is exported so middleware and validators share one source of truth
+ *    rather than repeating the string literals.
  */
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 const SALT_ROUNDS = 12;
+
+/** The only valid role values, exported so nothing else hard-codes them. */
+export const ROLES = Object.freeze({ USER: 'user', ADMIN: 'admin' });
+export const ROLE_VALUES = Object.freeze(Object.values(ROLES));
 
 const userSchema = new mongoose.Schema(
   {
@@ -43,6 +56,15 @@ const userSchema = new mongoose.Schema(
       minlength: [8, 'Password must be at least 8 characters'],
       select: false,
     },
+    role: {
+      type: String,
+      enum: {
+        values: ROLE_VALUES,
+        message: `Role must be one of: ${ROLE_VALUES.join(', ')}`,
+      },
+      default: ROLES.USER,
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -59,8 +81,9 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Speeds up the duplicate-email lookup that runs on every signup.
-userSchema.index({ email: 1 }, { unique: true });
+// NOTE: no explicit userSchema.index({ email: 1 }) here — `unique: true` on the
+// email path already creates that index, and declaring it twice makes Mongoose
+// log a duplicate-index warning on every startup.
 
 /**
  * Hash the password whenever it is new or changed.
@@ -77,6 +100,15 @@ userSchema.pre('save', async function hashPassword() {
  */
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   return bcrypt.compare(candidate, this.password);
+};
+
+/**
+ * Is this user an administrator?
+ * A method rather than a scattered `user.role === 'admin'` comparison, so the
+ * definition lives in one place if roles ever change shape.
+ */
+userSchema.methods.isAdmin = function isAdmin() {
+  return this.role === ROLES.ADMIN;
 };
 
 const User = mongoose.model('User', userSchema);

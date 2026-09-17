@@ -7,7 +7,7 @@ Abbas Hussain · [github.com/AbbasFullstack](https://github.com/AbbasFullstack)
 |------|-------|--------|
 | 1 | RESTful CRUD API — Books (Node.js, Express, MongoDB, Mongoose) | ✅ Complete |
 | 2 | User authentication — signup / login with JWT + bcrypt | ✅ Complete |
-| 3 | TBD | ⏳ Pending |
+| 3 | Role-based access control — roles, ownership, pagination, search | ✅ Complete |
 | 4 | TBD | ⏳ Pending |
 
 ---
@@ -41,18 +41,21 @@ internify-backend-tasks/
 │   │   └── db.js                 # Mongoose connection
 │   ├── models/
 │   │   ├── Book.js               # schema, types, validators, indexes
-│   │   └── User.js               # user schema, bcrypt pre-save hook
+│   │   └── User.js               # user schema, role enum, bcrypt pre-save hook
 │   ├── controllers/
-│   │   ├── bookController.js     # CRUD logic
-│   │   └── authController.js     # signup, login, getMe
+│   │   ├── bookController.js     # CRUD logic, pagination, search
+│   │   ├── authController.js     # signup, login, getMe
+│   │   └── adminController.js    # user list, role change, delete (admin only)
 │   ├── routes/
 │   │   ├── bookRoutes.js         # URL -> middleware -> controller
 │   │   ├── authRoutes.js         # /api/auth
-│   │   └── protectedRoutes.js    # /api/protected (JWT-guarded)
+│   │   ├── protectedRoutes.js    # /api/protected (JWT-guarded)
+│   │   └── adminRoutes.js        # /api/admin (admin-only, one guard for the router)
 │   ├── middleware/
 │   │   ├── validateBook.js       # body + ObjectId validation
 │   │   ├── validateAuth.js       # signup / login body validation
 │   │   ├── authMiddleware.js     # reusable `protect` JWT guard
+│   │   ├── roleMiddleware.js     # restrictTo(), requireOwnership(), loadResource()
 │   │   └── errorHandler.js       # 404 + central error handler
 │   └── utils/
 │       ├── AppError.js           # error with an HTTP status code
@@ -60,13 +63,17 @@ internify-backend-tasks/
 │       └── jwt.js                # sign / verify / extract Bearer token
 ├── postman/
 │   ├── Internify-Task1-Books.postman_collection.json
-│   └── Internify-Task2-Auth.postman_collection.json
+│   ├── Internify-Task2-Auth.postman_collection.json
+│   └── Internify-Task3-RBAC.postman_collection.json
 ├── scripts/
 │   ├── smoke-test.js             # live HTTP run of every Books endpoint
-│   └── auth-smoke-test.js        # live HTTP run of the whole auth flow
+│   ├── auth-smoke-test.js        # live HTTP run of the whole auth flow
+│   ├── rbac-smoke-test.js        # live HTTP run of the permission matrix
+│   └── make-admin.js             # create/promote the first administrator
 └── tests/
-    ├── books.test.js             # 20 automated tests (in-memory MongoDB)
-    └── auth.test.js              # 28 automated tests (in-memory MongoDB)
+    ├── books.test.js             # 33 automated tests (in-memory MongoDB)
+    ├── auth.test.js              # 28 automated tests (in-memory MongoDB)
+    └── rbac.test.js              # 44 automated tests (in-memory MongoDB)
 ```
 
 ## Getting started
@@ -489,32 +496,46 @@ name surfaces immediately instead of producing a confusing result.
 npm test
 ```
 
-48 tests across 13 suites, run against an in-memory MongoDB — no local `mongod`
+105 tests across 24 suites, run against an in-memory MongoDB — no local `mongod`
 required, and nothing is left behind.
 
 ```bash
-npm test          # everything (48 tests)
-npm run test:auth # auth only  (28 tests)
+npm test           # everything (105 tests)
+npm run test:auth  # auth only  (28 tests)
+npm run test:rbac  # RBAC only  (44 tests)
 ```
 
 ```
-# tests 48
-# pass 48
+# tests 105
+# suites 24
+# pass 105
 # fail 0
 ```
 
-Task 1 (`tests/books.test.js`, 20 tests) covers the Books CRUD happy path plus
-its `400` / `404` error cases. Task 2 (`tests/auth.test.js`, 28 tests) covers
-signup, login, the protected routes and every auth error path — including that
-the unknown-email and wrong-password messages are identical, that two users with
-the same password get different hashes, and that an expired, tampered,
-wrong-secret or deleted-account token is rejected.
+Task 1 (`tests/books.test.js`, 33 tests) covers the Books CRUD happy path plus
+its `400` / `404` error cases, and — since Task 3 made writes authenticated —
+asserts that anonymous writes are refused and that ownership is recorded from
+the token rather than the body.
+
+Task 2 (`tests/auth.test.js`, 28 tests) covers signup, login, the protected
+routes and every auth error path — including that the unknown-email and
+wrong-password messages are identical, that two users with the same password get
+different hashes, and that an expired, tampered, wrong-secret or deleted-account
+token is rejected.
+
+Task 3 (`tests/rbac.test.js`, 44 tests) covers the permission matrix end to end:
+a signup cannot promote itself, a non-owner's edit and delete are refused with
+**403** *and the document is verified unchanged*, an admin may act on anyone's
+record, pagination does not repeat or skip across pages, `?limit=9999` is capped
+at 100, `?search=.*` is treated as literal text, and the admin routes return
+**401** / **403** / **200** for anonymous / user / admin respectively.
 
 ### Live HTTP smoke test
 
 ```bash
 node scripts/smoke-test.js      # Task 1 — Books
 npm run smoke:auth              # Task 2 — authentication
+npm run smoke:rbac              # Task 3 — the permission matrix
 ```
 
 Boots a real server and drives every endpoint over HTTP, printing each
@@ -552,6 +573,24 @@ GET    /api/auth/me               -> 401 Unauthorized (wrong-secret token)
 GET    /api/auth/me               -> 401 Unauthorized (account deleted)
 ```
 
+The RBAC smoke run covers 56 assertions and prints the four-way matrix:
+
+```
+POST   /api/books                 -> 401 Unauthorized (anonymous)
+POST   /api/books                 -> 400 Bad Request  (createdBy forged in the body)
+POST   /api/books                 -> 201 Created      (owner recorded from the token)
+PUT    /api/books/:id             -> 200 OK           (owner edits own)
+PUT    /api/books/:id             -> 403 Forbidden    (non-owner refused, document unchanged)
+PUT    /api/books/:id             -> 200 OK           (admin overrides)
+DELETE /api/books/:id             -> 403 Forbidden    (non-owner refused, book survives)
+GET    /api/books?page=1&limit=5  -> 200 OK           (pages do not overlap)
+GET    /api/books?limit=9999      -> 200 OK           (limit capped at 100)
+GET    /api/books?search=clean    -> 200 OK           (title / author / genre)
+GET    /api/books?search=.*       -> 200 OK           (literal, 0 results)
+GET    /api/admin/users           -> 401 / 403 / 200  (anonymous / user / admin)
+GET    /api/admin/users           -> 403 Forbidden    (stale admin token after demotion)
+```
+
 ### Postman
 
 Two collections live in [`postman/`](./postman):
@@ -561,8 +600,195 @@ Two collections live in [`postman/`](./postman):
 - `Internify-Task2-Auth.postman_collection.json` — the full auth flow plus eight
   error requests. Requests 1 and 2 capture the JWT into a collection variable,
   so the protected requests run without copy-pasting.
+- `Internify-Task3-RBAC.postman_collection.json` — 29 requests walking the whole
+  permission matrix. It signs up two users and logs in an admin, capturing all
+  three tokens and the book id as it goes, then proves a non-owner is refused
+  while an admin succeeds. Create the admin first with
+  `node scripts/make-admin.js admin@example.com AdminPass123`.
 
 Import either one, set `baseUrl`, and run the folder.
+
+# Task 3 — Role-Based Access Control (RBAC)
+
+Two roles, **user** and **admin**, with ownership on the Books resource.
+Admins may act on any record; regular users may read everything but only create,
+edit and delete their own. Records are paginated and searchable.
+
+## The access matrix
+
+| Action | Anonymous | User | Admin |
+|---|---|---|---|
+| `GET /api/books` (list, search, paginate) | ✅ 200 | ✅ 200 | ✅ 200 |
+| `GET /api/books/:id` | ✅ 200 | ✅ 200 | ✅ 200 |
+| `POST /api/books` | ❌ 401 | ✅ 201 | ✅ 201 |
+| `GET /api/books/mine` | ❌ 401 | ✅ 200 (own only) | ✅ 200 (own only) |
+| `PUT /api/books/:id` | ❌ 401 | ✅ 200 if owner, else **403** | ✅ 200 (any) |
+| `DELETE /api/books/:id` | ❌ 401 | ✅ 200 if owner, else **403** | ✅ 200 (any) |
+| `GET /api/admin/users` | ❌ 401 | ❌ **403** | ✅ 200 |
+| `PATCH /api/admin/users/:id/role` | ❌ 401 | ❌ **403** | ✅ 200 |
+| `DELETE /api/admin/users/:id` | ❌ 401 | ❌ **403** | ✅ 200 |
+
+**401 vs 403.** 401 means *"I do not know who you are"* — no token, or a bad one.
+403 means *"I know exactly who you are, and you may not do this."* Conflating them
+tells a signed-in user to log in again when the real answer is that the record is
+not theirs.
+
+## Roles
+
+`role` is an enum on the User model: `'user'` (default) or `'admin'`.
+
+A role **cannot** be set at signup. The auth validator only accepts
+`name`, `email` and `password`, so `{"role":"admin"}` in a signup body is
+rejected with **400 Unknown field: role** rather than silently granted.
+Elevation happens one of two ways:
+
+```bash
+# 1. The bootstrap script — for the very first admin, who has no admin to promote them
+node scripts/make-admin.js you@example.com YourPassword123
+```
+
+```http
+# 2. An existing admin, over HTTP
+PATCH /api/admin/users/:id/role
+Authorization: Bearer <admin token>
+{ "role": "admin" }
+```
+
+The first-admin problem is real: the promote endpoint requires an admin to call
+it, and signup refuses the field, so the loop has no entry point without
+something like `make-admin.js` that runs with server access.
+
+## Ownership
+
+Every book carries `createdBy`, set from `req.user` — never from the request body,
+so ownership cannot be forged. It is a required field, which matters: if it were
+optional, a document without an owner would have nothing to compare against and
+the ownership check would have to fail open.
+
+The check itself lives in the route, not the controller:
+
+```js
+router.route('/:id')
+  .put(protect, validateObjectId, loadResource(Book, 'book'), requireOwnership(), validateUpdateBook, updateBook)
+```
+
+`loadResource` fetches the document onto `req.resource`, `requireOwnership`
+compares it against `req.user`, and only then does the controller run. The
+controller never has to remember the rule, because it cannot run without it.
+
+## Pagination
+
+`GET /api/books` accepts `?page=` and `?limit=`, and returns the metadata a
+client needs to build a pager:
+
+```bash
+curl "localhost:5000/api/books?page=2&limit=5"
+```
+
+```json
+{
+  "success": true,
+  "count": 5,
+  "total": 47,
+  "page": 2,
+  "pages": 10,
+  "hasNextPage": true,
+  "hasPrevPage": true,
+  "limit": 5,
+  "data": [ /* ... */ ]
+}
+```
+
+- `limit` is capped at **100** so a client cannot ask for the whole collection in
+  one request. `?limit=9999` returns `limit: 100`.
+- A junk page (`?page=abc`) falls back to `1`; a page past the end is an empty
+  page, not an error.
+- `skip`/`limit` are used with `countDocuments` on the *same* filter, so `total`
+  and `pages` describe the result set the caller actually asked for.
+
+## Search and filters
+
+One `?search=` parameter covers **title, author and genre**, so a single box
+searches everything a person would type.
+
+```bash
+curl "localhost:5000/api/books?search=dune"          # matches the title
+curl "localhost:5000/api/books?search=herbert"       # matches the author
+curl "localhost:5000/api/books?search=cyberpunk"     # matches the genre
+curl "localhost:5000/api/books?genre=software&page=1&limit=5"
+```
+
+Matching is **case-insensitive** and matches **partial words** — `dun` finds
+`Dune`. That is a regex rather than MongoDB's `$text`, and a deliberate choice:
+`$text` matches whole words only, which is wrong for a search box. The text index
+stays on the model for full-phrase work.
+
+User input is escaped before it reaches `RegExp`, so `?search=.*` matches the
+literal characters `.*` and returns **zero** results instead of dumping the
+collection. Two tests assert exactly that.
+
+## RBAC endpoints
+
+### `GET /api/books/mine` — the caller's own books (protected)
+
+```bash
+curl localhost:5000/api/books/mine -H "Authorization: Bearer <token>"
+```
+
+Scoped to `req.user.id` with no override — an admin wanting everything uses
+`GET /api/books`. Declared **before** `/:id` in the router, because Express
+matches in order and `mine` would otherwise be parsed as an object id and
+rejected with a 400.
+
+### `GET /api/admin/users` — list users (admin)
+
+```bash
+curl "localhost:5000/api/admin/users?role=admin&page=1&limit=10" -H "Authorization: Bearer <admin token>"
+```
+
+Same pagination shape as books, and the same `?search=` across name and email.
+The password hash is never present in the response.
+
+### `GET /api/admin/users/:id` — one user plus their book count (admin)
+
+### `PATCH /api/admin/users/:id/role` — promote or demote (admin)
+
+```bash
+curl -X PATCH localhost:5000/api/admin/users/<id>/role \
+  -H "Authorization: Bearer <admin token>" \
+  -H "Content-Type: application/json" \
+  -d '{"role":"admin"}'
+```
+
+Refuses self-demotion with **400**: an admin who demotes themselves loses access
+to this very endpoint, and if they are the only admin there is no way back
+without database access. Promote a second admin first.
+
+### `DELETE /api/admin/users/:id` — remove an account (admin)
+
+Refuses self-deletion with **400**. Reports how many books the account owned so
+the caller can see what is being orphaned — the books are intentionally left in
+place rather than cascade-deleted, because silently destroying data other admins
+may still need is worse than a dangling reference.
+
+## Setting up a local admin
+
+```bash
+# create (or promote) an admin, then log in normally
+node scripts/make-admin.js admin@example.com AdminPass123
+
+curl -X POST localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"AdminPass123"}'
+```
+
+## Status codes added by Task 3
+
+| Code | Meaning in this task |
+|---|---|
+| **401** | No token, or a token that is expired / malformed / signed with the wrong key / points at a deleted account |
+| **403** | Valid token, but the caller is neither the owner nor an admin, or the route needs a role they do not hold |
+| **400** | Self-demotion, self-deletion, an invalid role value, or an unknown body field such as `createdBy` or `role` |
 
 ## Design notes
 
@@ -596,6 +822,34 @@ Import either one, set `baseUrl`, and run the folder.
   wrong-password and unknown-email, and a test asserts the two responses match.
 - **Validation is asymmetric on purpose.** Signup enforces password strength;
   login does not, so an account created before a rule change can still sign in.
+
+### Design notes specific to Task 3
+
+- **Authorisation reads the database, not the token.** The JWT carries a `role`
+  claim for the client's convenience, but `restrictTo` checks `req.user.role`,
+  which `protect` loads fresh from MongoDB. A token minted while someone was an
+  admin cannot be used to keep admin access after a demotion — a test mints a
+  token, demotes the user in the database, and asserts the *same* token now
+  gets a 403.
+- **Ownership is enforced in the route, not the controller.** `loadResource` +
+  `requireOwnership` run before the handler, so no controller can accidentally
+  omit the check. Guards are composed rather than repeated.
+- **A missing document is 404, not 403.** Returning 403 for an id that does not
+  exist would confirm the id exists but is someone else's. 404 keeps both cases
+  indistinguishable.
+- **Self-demotion and self-deletion are refused.** Both are unrecoverable if the
+  caller is the only admin, and neither is something a user means to do.
+- **Regex metacharacters in `?search=` are escaped.** Without that, `?search=.*`
+  is a wildcard that dumps the collection, and `?search=(` is a crash.
+- **The admin router applies its guards once,** via `router.use(protect,
+  restrictTo(ROLES.ADMIN))`. A new endpoint added below is admin-only by
+  default, so forgetting a guard fails closed rather than open.
+- **`ROLES` and `ROLE_VALUES` are exported from the model** so the enum, the
+  guards and the validators all read from one source instead of repeating
+  string literals.
+- **Books are not cascade-deleted with their owner.** `DELETE /api/admin/users/:id`
+  reports the count instead. Losing a user should not silently take their data
+  with it.
 
 ---
 
