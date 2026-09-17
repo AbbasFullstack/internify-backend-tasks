@@ -5,9 +5,22 @@
  *  - title, author, genre : required non-empty strings
  *  - year                 : required integer within a sane range
  *  - price                : required number, cannot be negative
+ *  - createdBy            : required reference to the User who created it
  *
  * `trim: true` on the strings means "  Dune  " is stored as "Dune", and
  * `minlength` guards against single-character junk.
+ *
+ * Ownership (Task 3):
+ *  - `createdBy` is what the RBAC rules hang off. It is required, so a document
+ *    can never exist without an owner — otherwise "only the owner may edit"
+ *    would have nothing to compare against and the guard would have to fail
+ *    open. The controller sets it from `req.user`, never from the request body.
+ *  - Indexed because every ownership check filters on it.
+ *
+ * Search (Task 3):
+ *  - A text index over title/author/genre backs the `?search=` query. A regex
+ *    would also work, but a text index lets MongoDB do the work instead of
+ *    scanning every document, and it ranks by relevance.
  */
 import mongoose from 'mongoose';
 
@@ -53,6 +66,12 @@ const bookSchema = new mongoose.Schema(
         message: 'Price must be a valid number',
       },
     },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'A book must have an owner'],
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -72,6 +91,22 @@ const bookSchema = new mongoose.Schema(
 bookSchema.index({ author: 1 });
 bookSchema.index({ genre: 1 });
 bookSchema.index({ createdAt: -1 });
+
+// Backs ?search= across the three human-readable fields.
+bookSchema.index({ title: 'text', author: 'text', genre: 'text' });
+
+/**
+ * Does this user own the document?
+ *
+ * Takes the whole user document rather than a bare id so the admin short-circuit
+ * is impossible to forget, and returns a boolean so callers can decide whether
+ * that means 403 or "carry on".
+ */
+bookSchema.methods.isOwnedBy = function isOwnedBy(user) {
+  if (!user) return false;
+  if (user.isAdmin?.()) return true;
+  return String(this.createdBy) === String(user.id ?? user._id);
+};
 
 const Book = mongoose.model('Book', bookSchema);
 

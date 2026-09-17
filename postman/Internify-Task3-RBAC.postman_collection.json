@@ -1,0 +1,782 @@
+{
+  "info": {
+    "_postman_id": "b7d3e1a4-2c65-4f19-9a0e-8d47c1f5b233",
+    "name": "Internify Task 3 — Role-Based Access Control",
+    "description": "Full RBAC walkthrough against the Books API.\n\nRuns in order and chains its own state:\n  1. Signup a regular user            -> captures ownerToken, ownerId\n  2. Signup a second regular user     -> captures otherToken\n  3. Admin login (seeded out of band) -> captures adminToken\n  4. Owner creates a book             -> captures bookId\n  5. Owner updates and deletes theirs -> 200\n  6. Other user tries the same        -> 403, and the book survives\n  7. Admin overrides on that book     -> 200\n  8. Pagination and search            -> metadata and matches\n  9. Admin-only user routes           -> 200 for admin, 403 for a user, 401 anonymous\n\nBefore running: create the admin once with\n  node scripts/make-admin.js admin@example.com AdminPass123\n\nSet `adminEmail` and `adminPassword` in the collection variables if you use\ndifferent credentials.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "ownerToken", "value": "", "type": "string" },
+    { "key": "otherToken", "value": "", "type": "string" },
+    { "key": "adminToken", "value": "", "type": "string" },
+    { "key": "ownerId", "value": "", "type": "string" },
+    { "key": "otherId", "value": "", "type": "string" },
+    { "key": "adminId", "value": "", "type": "string" },
+    { "key": "bookId", "value": "", "type": "string" },
+    { "key": "adminEmail", "value": "admin@example.com", "type": "string" },
+    { "key": "adminPassword", "value": "AdminPass123", "type": "string" },
+    { "key": "ownerEmail", "value": "owner.postman@example.com", "type": "string" },
+    { "key": "ownerPassword", "value": "OwnerPass123", "type": "string" },
+    { "key": "otherEmail", "value": "other.postman@example.com", "type": "string" },
+    { "key": "otherPassword", "value": "OtherPass123", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Accounts",
+      "item": [
+        {
+          "name": "1.1 Signup owner (defaults to role user)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('a new account is a regular user', () => pm.expect(b.data.user.role).to.eql('user'));",
+                  "pm.test('the password is not returned', () => pm.expect(b.data.user.password).to.be.undefined);",
+                  "pm.test('a token was issued', () => pm.expect(b.data.token).to.be.a('string'));",
+                  "pm.collectionVariables.set('ownerToken', b.data.token);",
+                  "pm.collectionVariables.set('ownerId', b.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api", "auth", "signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Owner\",\n  \"email\": \"{{ownerEmail}}\",\n  \"password\": \"{{ownerPassword}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "1.2 Signup second user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('otherToken', b.data.token);",
+                  "pm.collectionVariables.set('otherId', b.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api", "auth", "signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Other\",\n  \"email\": \"{{otherEmail}}\",\n  \"password\": \"{{otherPassword}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "1.3 Signup cannot self-promote (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the role field is rejected outright', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/Unknown field: role/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api", "auth", "signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sneaky User\",\n  \"email\": \"sneaky.postman@example.com\",\n  \"password\": \"SneakyPass123\",\n  \"role\": \"admin\"\n}"
+            }
+          }
+        },
+        {
+          "name": "1.4 Admin login (captures adminToken)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the account is an admin', () => pm.expect(b.data.user.role).to.eql('admin'));",
+                  "pm.collectionVariables.set('adminToken', b.data.token);",
+                  "pm.collectionVariables.set('adminId', b.data.user.id);",
+                  "const payload = JSON.parse(Buffer.from(b.data.token.split('.')[1], 'base64url').toString());",
+                  "pm.test('the token carries the role claim', () => pm.expect(payload.role).to.eql('admin'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Writes — who may create",
+      "item": [
+        {
+          "name": "2.1 Anonymous create (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "// 401 = who are you; 403 = I know you, and no.",
+                  "pm.test('it is 401, not 403', () => pm.expect(pm.response.code).to.not.eql(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/books", "host": ["{{baseUrl}}"], "path": ["api", "books"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Anonymous Book\",\n  \"author\": \"Nobody\",\n  \"genre\": \"Test\",\n  \"year\": 2020,\n  \"price\": 10\n}"
+            }
+          }
+        },
+        {
+          "name": "2.2 Owner creates a book (201, owns it)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('bookId', b.data.id);",
+                  "pm.test('the caller is recorded as the owner', () => {",
+                  "  pm.expect(String(b.data.createdBy)).to.eql(pm.collectionVariables.get('ownerId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{ownerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/books", "host": ["{{baseUrl}}"], "path": ["api", "books"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Clean Code\",\n  \"author\": \"Robert C. Martin\",\n  \"genre\": \"Software Engineering\",\n  \"year\": 2008,\n  \"price\": 34.99\n}"
+            }
+          }
+        },
+        {
+          "name": "2.3 Forging createdBy in the body (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('an unknown body field is rejected', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/Unknown field: createdBy/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{ownerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/books", "host": ["{{baseUrl}}"], "path": ["api", "books"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Forged Ownership\",\n  \"author\": \"X\",\n  \"genre\": \"Y\",\n  \"year\": 2020,\n  \"price\": 1,\n  \"createdBy\": \"{{adminId}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Ownership — who may edit and delete",
+      "item": [
+        {
+          "name": "3.1 Owner edits their own book (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the price was applied', () => pm.expect(pm.response.json().data.price).to.eql(29.99));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{ownerToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 29.99\n}" }
+          }
+        },
+        {
+          "name": "3.2 Another user edits it (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('the message explains the ownership rule', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/only modify your own records/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{otherToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 1\n}" }
+          }
+        },
+        {
+          "name": "3.3 The refused edit changed nothing (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the price is still 29.99, not 1', () => {",
+                  "  pm.expect(pm.response.json().data.price).to.eql(29.99);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] }
+          }
+        },
+        {
+          "name": "3.4 Admin overrides and edits it (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the admin edit was applied', () => pm.expect(pm.response.json().data.price).to.eql(15.5));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 15.5\n}" }
+          }
+        },
+        {
+          "name": "3.5 Another user deletes it (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('the error body is the standard envelope', () => {",
+                  "  const b = pm.response.json();",
+                  "  pm.expect(b.success).to.be.false;",
+                  "  pm.expect(b.statusCode).to.eql(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{otherToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] }
+          }
+        },
+        {
+          "name": "3.6 The book survived (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the book still exists', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] }
+          }
+        },
+        {
+          "name": "3.7 Admin deletes anybody's book (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the deleted document is returned', () => {",
+                  "  pm.expect(pm.response.json().data.title).to.eql('Clean Code');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/books/{{bookId}}", "host": ["{{baseUrl}}"], "path": ["api", "books", "{{bookId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Reads — public, plus /mine",
+      "item": [
+        {
+          "name": "4.1 Anonymous list (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reads need no token', () => pm.expect(pm.response.json().success).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/books", "host": ["{{baseUrl}}"], "path": ["api", "books"] }
+          }
+        },
+        {
+          "name": "4.2 GET /api/books/mine (200, own records only)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the route is not shadowed by /:id', () => pm.expect(pm.response.code).to.not.eql(400));",
+                  "const ownerId = pm.collectionVariables.get('ownerId');",
+                  "pm.test('every book belongs to the caller', () => {",
+                  "  pm.response.json().data.forEach((b) => pm.expect(String(b.createdBy)).to.eql(ownerId));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{ownerToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/books/mine", "host": ["{{baseUrl}}"], "path": ["api", "books", "mine"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Pagination and search",
+      "item": [
+        {
+          "name": "5.1 Page 1 with a limit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('page is 1', () => pm.expect(b.page).to.eql(1));",
+                  "pm.test('the limit is honoured', () => pm.expect(b.data.length).to.be.at.most(2));",
+                  "pm.test('pagination metadata is present', () => {",
+                  "  pm.expect(b).to.have.property('total');",
+                  "  pm.expect(b).to.have.property('pages');",
+                  "  pm.expect(b).to.have.property('hasNextPage');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books?page=1&limit=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "books"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "2" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.2 An absurd limit is capped at 100",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the limit is capped at 100', () => pm.expect(pm.response.json().limit).to.eql(100));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books?limit=9999",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "books"],
+              "query": [{ "key": "limit", "value": "9999" }]
+            }
+          }
+        },
+        {
+          "name": "5.3 A junk page falls back to 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('a junk page falls back to 1', () => pm.expect(pm.response.json().page).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books?page=abc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "books"],
+              "query": [{ "key": "page", "value": "abc" }]
+            }
+          }
+        },
+        {
+          "name": "5.4 Search by title",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('search is case-insensitive', () => {",
+                  "  pm.expect(pm.response.json().total).to.be.at.least(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books?search=clean",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "books"],
+              "query": [{ "key": "search", "value": "clean" }]
+            }
+          }
+        },
+        {
+          "name": "5.5 A regex wildcard is literals, not a wildcard",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "// Unescaped, \".*\" would match every document in the collection.",
+                  "pm.test('a regex wildcard matches nothing', () => pm.expect(pm.response.json().total).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/books?search=.*",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "books"],
+              "query": [{ "key": "search", "value": ".*" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Admin-only routes",
+      "item": [
+        {
+          "name": "6.1 Anonymous (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/admin/users", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users"] }
+          }
+        },
+        {
+          "name": "6.2 Regular user (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('the message names the required role', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/requires one of: admin/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{ownerToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/users", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users"] }
+          }
+        },
+        {
+          "name": "6.3 Admin lists users (200, no hash leak)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the list is paginated', () => pm.expect(b).to.have.property('page'));",
+                  "pm.test('no bcrypt hash is anywhere in the body', () => {",
+                  "  pm.expect(JSON.stringify(b)).to.not.include('$2a$');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/users", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users"] }
+          }
+        },
+        {
+          "name": "6.4 Admin filters users by role (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('every result is an admin', () => {",
+                  "  pm.response.json().data.forEach((u) => pm.expect(u.role).to.eql('admin'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/users?role=admin",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "users"],
+              "query": [{ "key": "role", "value": "admin" }]
+            }
+          }
+        },
+        {
+          "name": "6.5 Admin promotes a user (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the user is now an admin', () => pm.expect(pm.response.json().data.role).to.eql('admin'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{otherId}}/role", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{otherId}}", "role"] },
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"admin\"\n}" }
+          }
+        },
+        {
+          "name": "6.6 Admin demotes them back (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the user is back to user', () => pm.expect(pm.response.json().data.role).to.eql('user'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{otherId}}/role", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{otherId}}", "role"] },
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"user\"\n}" }
+          }
+        },
+        {
+          "name": "6.7 Admin cannot demote themselves (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the reason is explained', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/cannot remove your own admin role/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{adminId}}/role", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{adminId}}", "role"] },
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"user\"\n}" }
+          }
+        },
+        {
+          "name": "6.8 Admin cannot delete themselves (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the reason is explained', () => {",
+                  "  pm.expect(pm.response.json().message).to.match(/cannot delete your own account/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{adminId}}", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{adminId}}"] }
+          }
+        }
+      ]
+    }
+  ]
+}
