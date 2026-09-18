@@ -8,7 +8,7 @@ Abbas Hussain · [github.com/AbbasFullstack](https://github.com/AbbasFullstack)
 | 1 | RESTful CRUD API — Books (Node.js, Express, MongoDB, Mongoose) | ✅ Complete |
 | 2 | User authentication — signup / login with JWT + bcrypt | ✅ Complete |
 | 3 | Role-based access control — roles, ownership, pagination, search | ✅ Complete |
-| 4 | TBD | ⏳ Pending |
+| 4 | Blog system — file upload (Multer), email (Nodemailer), security middleware | ✅ Complete |
 
 ---
 
@@ -496,19 +496,20 @@ name surfaces immediately instead of producing a confusing result.
 npm test
 ```
 
-105 tests across 24 suites, run against an in-memory MongoDB — no local `mongod`
+146 tests across 31 suites, run against an in-memory MongoDB — no local `mongod`
 required, and nothing is left behind.
 
 ```bash
-npm test           # everything (105 tests)
+npm test           # everything (146 tests)
 npm run test:auth  # auth only  (28 tests)
 npm run test:rbac  # RBAC only  (44 tests)
+npm run test:blog  # blog only  (41 tests)
 ```
 
 ```
-# tests 105
-# suites 24
-# pass 105
+# tests 146
+# suites 31
+# pass 146
 # fail 0
 ```
 
@@ -850,6 +851,308 @@ curl -X POST localhost:5000/api/auth/login \
 - **Books are not cascade-deleted with their owner.** `DELETE /api/admin/users/:id`
   reports the count instead. Losing a user should not silently take their data
   with it.
+
+---
+
+# Task 4 — Blog System with File Upload and Email
+
+A Blog resource on top of the existing API: posts carry an optional cover image
+uploaded as multipart, and creating a post sends a confirmation email.
+
+## The flow
+
+```
+client ──POST /api/blogs (multipart)──► validate ──► save post ──► send email
+                                          │              │            │
+                                     400 on bad      201 + image     best-effort:
+                                     input           reference      never fails the
+                                                                    request
+```
+
+## Blog data model
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `title` | String | ✅ | trimmed, 3–180 chars |
+| `slug` | String | auto | derived from the title, unique; `-2`, `-3` on collision |
+| `content` | String | ✅ | trimmed, min 20 chars |
+| `author` | String | ✅ | trimmed, max 120 chars |
+| `excerpt` | String | — | max 300 chars |
+| `tags` | [String] | — | lowercased, trimmed, deduped, max 10 |
+| `image` | Object | — | reference to the uploaded file (see below) |
+| `createdBy` | ObjectId | ✅ | ref to `User`; set from the token, never the body |
+| `createdAt` / `updatedAt` | Date | auto | `timestamps: true` |
+
+### The `image` object
+
+The database stores a **reference**, not the bytes. A 2 MB image inside a
+document would bloat every query that returns a post.
+
+```json
+{
+  "filename": "blog-1758000000000-123456789.png",
+  "url": "/uploads/blogs/blog-1758000000000-123456789.png",
+  "mimetype": "image/png",
+  "size": 4213
+}
+```
+
+`path` (the absolute disk location) is stored but is `select: false` and is
+deleted in `toJSON`, so the server's directory layout is never published.
+Verified by a test that asserts `image.path` is `undefined` in every response.
+
+## File upload (Multer)
+
+Stored on disk under `uploads/blogs/`. Three limits, each for a different reason:
+
+| Limit | Default | Why |
+|---|---|---|
+| `fileSize` | 2 MB (`MAX_IMAGE_BYTES`) | one request cannot fill the disk |
+| `files` | 1 | a batch cannot arrive in one request |
+| `fileFilter` | jpg, jpeg, png, webp, gif | a `.php`/`.svg` must never be stored and later served as a script |
+
+`fileFilter` matches the **extension and the declared mimetype** — neither alone
+is trustworthy, since a client controls both. The filename is generated, never
+taken from the client: a client-supplied name can contain `../` or overwrite an
+existing file.
+
+Uploaded files are served read-only from `/uploads` with `dotfiles: 'deny'` and
+directory listing off, so a request cannot walk outside the folder or enumerate
+it.
+
+### Rejected uploads leave nothing behind
+
+Multer writes to disk **before** validation or authorisation runs. Without
+handling, a 400 from the body rules or a 403 from the ownership guard would
+leave an orphan file every time.
+
+`cleanupUploadOnError` is a 4-arity error handler wired into the error pipeline.
+Express routes every downstream failure to it, it **awaits** the delete, and only
+then re-throws — so the cleanup finishes before the response is sent rather than
+racing it. A test asserts the file count is unchanged after a rejected post.
+
+## Email (Nodemailer)
+
+`sendPostConfirmation` is called after the post is saved. Four rules, all
+falling out of *"the email must never break the post"*:
+
+1. **Fail soft.** It resolves `{ sent: false, reason }` instead of throwing. A
+   saved post is a success even when SMTP is down, and the response says so:
+   ```json
+   { "notification": { "sent": false, "reason": "not-configured" } }
+   ```
+   `reason` is one of `no-recipient`, `not-configured`, `error`.
+2. **Never block for long.** `SMTP_TIMEOUT_MS` (default 8000) keeps a hanging
+   mail server to seconds, not minutes.
+3. **No transport is a valid state.** With no `EMAIL_USER`/`EMAIL_PASS` the
+   mailer reports itself unconfigured and every send resolves as skipped — which
+   is what lets `npm test` and local development run with no secrets at all.
+4. **Never log the password.** Only recipients are logged.
+
+The HTML body escapes every interpolated value — the title is user input, and
+unescaped it would inject markup into the email. A test posts
+`<script>alert(1)</script>` as the title and asserts the raw tag never reaches
+the HTML.
+
+## Security middleware
+
+**Helmet** is applied first, so headers are attached even to error responses.
+One deliberate deviation from the defaults: the cross-origin resource policy is
+relaxed to `cross-origin`, otherwise a browser blocks every uploaded image as
+soon as the client is on another origin. CSP is off because this service returns
+JSON and files, never HTML pages.
+
+**Three rate limiters**, each with a distinct purpose:
+
+| Limiter | Default | Behaviour |
+|---|---|---|
+| global | 300 / 15 min | coarse ceiling on all traffic |
+| auth | 10 / 15 min | counts **only failed** logins — a successful login is free, so normal use never locks anyone out |
+| write | 30 / 1 hour | for endpoints that spend a resource; creating a post also sends an email, so it counts successes too |
+
+All three are skipped when `NODE_ENV=test`, because the suites fire well over a
+hundred requests in seconds and would otherwise fail for the wrong reason.
+
+## Blog endpoints
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/blogs` | Public | List with pagination, search and filters |
+| POST | `/api/blogs` | Token | Create (multipart, image field `"image"`) |
+| GET | `/api/blogs/mine` | Token | The caller's own posts |
+| GET | `/api/blogs/slug/:slug` | Public | Fetch one by slug |
+| GET | `/api/blogs/:id` | Public | Fetch one by id |
+| PUT | `/api/blogs/:id` | Owner or admin | Update (multipart, optional new image) |
+| DELETE | `/api/blogs/:id` | Owner or admin | Delete, and remove its file |
+| DELETE | `/api/blogs/:id/image` | Owner or admin | Remove just the image, keep the post |
+
+`GET /api/blogs/mine` is declared **before** `/:id` — Express matches in order,
+so if `/:id` came first then `"mine"` would be treated as an id and rejected
+with a 400.
+
+### Pagination, search and filters
+
+```
+GET /api/blogs?page=1&limit=10&search=upload&tag=node&author=abbas&sort=newest
+```
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `page` | 1 | values below 1 fall back to 1 |
+| `limit` | 10 | **capped at 100** — one request cannot ask for everything |
+| `search` | — | matches title, content and author; case-insensitive, partial |
+| `tag` | — | exact tag match |
+| `author` | — | case-insensitive partial match |
+| `sort` | `newest` | or `oldest` |
+
+The response carries `total`, `page`, `limit`, `pages`, `hasNext` and `hasPrev`.
+One filter object drives both the query and `countDocuments`, so `total` and the
+returned page can never disagree.
+
+A page past the end is an **empty page, not an error** — the caller asked a valid
+question and gets a truthful answer.
+
+Regex metacharacters in `search` and `author` are escaped. Without that,
+`?search=.*` is a wildcard that dumps the whole collection and `?search=(` is a
+crash. A test asserts both.
+
+### Create — worked example
+
+```bash
+curl -X POST http://localhost:5000/api/blogs \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "title=Shipping a Blog with File Uploads" \
+  -F "content=A blog post needs a title, a body and an optional image. This request proves the whole path works." \
+  -F "author=Abbas Hussain" \
+  -F "tags=[\"node\",\"multer\"]" \
+  -F "image=@cover.png"
+```
+
+`201 Created`:
+
+```json
+{
+  "success": true,
+  "message": "Blog post created and confirmation email sent",
+  "data": {
+    "post": {
+      "id": "66e7f1c2a4b8d9e0f1a2b3c4",
+      "title": "Shipping a Blog with File Uploads",
+      "slug": "shipping-a-blog-with-file-uploads",
+      "image": {
+        "filename": "blog-1758000000000-123456789.png",
+        "url": "/uploads/blogs/blog-1758000000000-123456789.png",
+        "mimetype": "image/png",
+        "size": 4213
+      },
+      "createdBy": "66e7f1c2a4b8d9e0f1a2b3c5",
+      "createdAt": "2026-09-18T02:00:00.000Z"
+    },
+    "notification": { "sent": true }
+  }
+}
+```
+
+With SMTP unconfigured the same request returns **201** with
+`"notification": { "sent": false, "reason": "not-configured" }` and the post
+exists. A test asserts exactly that.
+
+## Validation added by Task 4
+
+| Request | Response |
+|---|---|
+| missing `title` | 400 — Title is required |
+| `content` under 20 chars | 400 — Content must be at least 20 characters |
+| 11 tags | 400 — A post cannot have more than 10 tags |
+| `createdBy` in the body | 400 — Unknown field(s): createdBy |
+| non-image upload | 400 — Unsupported file type ".sh" |
+| image over the limit | 400 — Image is too large. Maximum size is 2.0 MB |
+| file sent as field `photo` | 400 — Unexpected file field "photo" |
+| `/api/blogs/not-an-id` | 400 — "not-an-id" is not a valid blog id |
+| `/api/blogs/<unknown>` | 404 |
+| anonymous write | 401 |
+| another user's post | 403 |
+
+Unknown body fields are **rejected**, not ignored. That is what makes `createdBy`,
+`slug` and `image` un-forgeable: the validator accepts only `title`, `content`,
+`author`, `excerpt` and `tags`.
+
+## Environment variables added by Task 4
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `UPLOAD_DIR` | `<project>/uploads` | where images are written; created on boot |
+| `MAX_IMAGE_BYTES` | `2097152` (2 MB) | per-file size cap |
+| `EMAIL_SERVICE` | `gmail` | Nodemailer service name |
+| `EMAIL_USER` | — | SMTP username. **Blank means email is skipped, not broken** |
+| `EMAIL_PASS` | — | For Gmail use an **App Password**, not the account password |
+| `EMAIL_FROM` | `EMAIL_USER` | sender address |
+| `SMTP_TIMEOUT_MS` | `8000` | give up on the SMTP server after this long |
+| `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX` | 15 min / 300 | global limiter |
+| `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX` | 15 min / 10 | failed logins only |
+| `WRITE_RATE_LIMIT_WINDOW_MS` / `WRITE_RATE_LIMIT_MAX` | 60 min / 30 | resource-spending endpoints |
+
+`uploads/` is git-ignored — it is user content, not source, and the folder is
+recreated on boot.
+
+## Testing Task 4
+
+```bash
+npm test          # everything (146 tests)
+npm run test:blog # blog only  (41 tests)
+npm run smoke:blog
+```
+
+`tests/blog.test.js` — **41 tests across 7 suites**:
+
+| Suite | Covers |
+|---|---|
+| Blog model | slug derivation, collision suffixes, tag normalisation, path hidden |
+| Creation and email | 201, email recipient/subject/body, HTML escaping, email failure still creates the post, 401 when anonymous |
+| Image upload | file stored, served over HTTP, non-image refused, oversize refused, no orphan after rejection, replace deletes the old file, delete removes the file, image-only delete keeps the post |
+| Validation | each 400 above, plus malformed id and unknown id |
+| Access control | public reads, cross-user 403 (and the write did not land), admin override, `/mine` scoping, 401 vs 403 |
+| Pagination and search | pages do not overlap, limit cap, past-the-end page, `.*` escaped, tag and author filters, slug lookup |
+| Security headers | helmet ran; uploaded images carry a permissive CORP |
+
+`scripts/blog-smoke-test.js` — **42 live HTTP assertions**. Boots a real server
+and walks the whole feature set with genuine requests, printing each
+request/response pair. The image is a real multipart upload that is fetched back
+over HTTP afterwards; the email transport is a recorder, so the run proves a
+confirmation was *attempted* with the right recipient and subject without
+SMTP credentials.
+
+`postman/Internify-Task4-Blog.postman_collection.json` — **32 requests across 9
+folders**, chaining tokens and ids as it goes. Three requests need a file
+attached by hand (2.1, 6.1, 7.1); any small PNG works.
+
+## Design notes specific to Task 4
+
+- **The email never fails the request.** `sendPostConfirmation` resolves instead
+  of throwing, and the outcome is reported in the response body. A blog post
+  that was written and saved is a success even if SMTP is unreachable, and the
+  client is told plainly which of the two happened.
+- **Upload cleanup is a middleware, not controller code.** Multer writes to disk
+  before anything else runs, so a request rejected in *middleware* never reaches
+  a controller — a controller's own catch block cannot cover it. The 4-arity
+  handler in the error pipeline is the only place that sees every failure path.
+- **Cleanup is awaited, not fired and forgotten.** Deleting after the response
+  is a race: the client can observe the file count before the delete lands. The
+  handler awaits, then re-throws.
+- **The old file is deleted after the save, not before.** The reverse order would
+  destroy the image the stored document still points at if the save then failed.
+- **`requireOwnership` reads the document, not the body.** `loadResource` fetches
+  the post and the guard compares `createdBy` to `req.user.id`, so ownership
+  cannot be claimed by sending an id.
+- **Static uploads are served with `dotfiles: 'deny'` and no listing.** This is
+  the one place a request can name a file on disk, so it must not be able to
+  walk out of the folder or enumerate it.
+- **`removeUploadedFile` rebuilds the path from `path.basename(filename)`**
+  rather than trusting a stored absolute path — a tampered document could
+  otherwise point a delete at any file on the system.
+- **Limits are configuration, not constants.** `MAX_IMAGE_BYTES` and the three
+  rate-limit windows come from the environment, so a deployment can tighten them
+  without a code change.
 
 ---
 
