@@ -1,7 +1,7 @@
 {
   "name": "internify-backend-tasks",
   "version": "1.0.0",
-  "description": "Internify Backend Development Internship — RESTful CRUD API, JWT authentication, and role-based access control (Node.js, Express, MongoDB, Mongoose)",
+  "description": "Internify Backend Development Internship — CRUD API, JWT authentication, role-based access control, and a blog system with file upload and email (Node.js, Express, MongoDB, Mongoose)",
   "type": "module",
   "main": "server.js",
   "engines": {
@@ -16,7 +16,9 @@
     "smoke:auth": "node scripts/auth-smoke-test.js",
     "test:rbac": "node --test tests/rbac.test.js",
     "smoke:rbac": "node scripts/rbac-smoke-test.js",
-    "make:admin": "node scripts/make-admin.js"
+    "make:admin": "node scripts/make-admin.js",
+    "test:blog": "node --test tests/blog.test.js",
+    "smoke:blog": "node scripts/blog-smoke-test.js"
   },
   "keywords": [
     "nodejs",
@@ -25,6 +27,11 @@
     "mongoose",
     "crud",
     "rest-api",
+    "jwt",
+    "rbac",
+    "multer",
+    "file-upload",
+    "nodemailer",
     "internify"
   ],
   "author": "Abbas Hussain",
@@ -34,9 +41,13 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.6.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.10"
   },
   "devDependencies": {
     "mongodb-memory-server": "^10.0.0",
